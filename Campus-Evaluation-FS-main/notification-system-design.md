@@ -173,3 +173,272 @@ WebSockets are the preferred solution for this notification platform. Even thoug
             ▼
  UI Updates Instantly (No Refresh)
 ```
+
+# Stage 2 – Database Architecture
+
+## 1. Choose the Database
+
+**Recommended Choice: PostgreSQL**
+
+### Why PostgreSQL?
+- ACID-compliant transactions ensure reliable updates.
+- Excellent indexing capabilities (B-Tree, Hash, GIN, BRIN).
+- Supports millions of records efficiently.
+- Powerful SQL for filtering, sorting, and pagination.
+- Mature replication and partitioning support.
+- Widely used in enterprise notification systems.
+
+Although a NoSQL database like MongoDB could work, the notification data is structured and requires frequent filtering, sorting, and joins, making PostgreSQL a stronger fit.
+
+## 2. Database Schema
+
+### Student Table
+```sql
+CREATE TABLE students (
+    student_id BIGINT PRIMARY KEY,
+    full_name VARCHAR(100),
+    email VARCHAR(100) UNIQUE,
+    department VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+**Purpose:** Stores registered student information.
+
+### Notifications Table
+```sql
+CREATE TABLE notifications (
+    notification_id BIGSERIAL PRIMARY KEY,
+    student_id BIGINT NOT NULL,
+    notification_type VARCHAR(20) NOT NULL,
+    title VARCHAR(255),
+    message TEXT,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (student_id)
+        REFERENCES students(student_id)
+);
+```
+
+**Explanation**
+| Column | Purpose |
+| ------ | ------- |
+| `notification_id` | Unique notification ID |
+| `student_id` | Notification recipient |
+| `notification_type` | Placement, Event, Result |
+| `title` | Notification title |
+| `message` | Notification body |
+| `is_read` | Read status |
+| `created_at` | Creation timestamp |
+
+## 3. Entity Relationship
+
+```text
+Students
+---------
+student_id (PK)
+name
+email
+department
+
+        │
+        │ 1
+        │
+        ▼
+
+Notifications
+--------------
+notification_id (PK)
+student_id (FK)
+notification_type
+title
+message
+is_read
+created_at
+```
+**Relationship:** One student can have many notifications. (1 : N)
+
+## 4. Indexing Strategy
+
+Without indexes, every query scans the entire table. For millions of notifications, that is unacceptable.
+
+### Primary Key Index
+Automatically created: `notification_id`
+
+### Composite Index
+Most common query:
+```sql
+SELECT *
+FROM notifications
+WHERE student_id = ?
+AND is_read = FALSE
+ORDER BY created_at DESC;
+```
+**Create:**
+```sql
+CREATE INDEX idx_student_read_created
+ON notifications
+(student_id, is_read, created_at DESC);
+```
+**Why?** This index supports:
+- Student lookup
+- Read/unread filtering
+- Ordered results (without extra sorting)
+
+### Type Filter Index
+```sql
+CREATE INDEX idx_notification_type
+ON notifications(notification_type);
+```
+Supports: `WHERE notification_type='Placement'`
+
+## 5. Scaling Strategy
+
+Assume:
+- 500,000 students
+- 5 million notifications
+- 100,000 new notifications/day
+
+A single database will eventually become a bottleneck.
+
+### Read Replicas
+**Architecture:**
+```text
+           Primary DB
+               │
+      ┌────────┴────────┐
+      ▼                 ▼
+ Read Replica 1    Read Replica 2
+```
+- **Writes:** All writes go to the primary database.
+- **Reads:** Notification fetches go to replicas.
+- **Benefits:** Lower load on the primary, improved read scalability, higher availability.
+
+### Table Partitioning
+Partition the notifications table by time.
+- **Example:** `notifications_2026_jan`, `notifications_2026_feb`, `notifications_2026_mar`
+- **Benefits:** Faster searches, smaller indexes, easier archival, improved maintenance.
+
+### Sharding
+If one database is insufficient, shard by `student_id`.
+- **Example:**
+  - Shard 1: student_id 1–100000
+  - Shard 2: 100001–200000
+  - Shard 3: 200001–300000
+- **Benefits:** Distributes storage, parallel query execution, higher throughput.
+
+## 6. Data Volume Considerations
+
+**Potential bottlenecks:**
+- Mass placement notifications.
+- Campus-wide event announcements.
+- Result publication spikes.
+
+**Solutions:**
+- Batch inserts.
+- Connection pooling.
+- Read replicas.
+- Table partitioning.
+- Background workers for bulk notification creation.
+
+## 7. SQL Queries for Stage 1 APIs
+
+### Fetch Notifications
+```sql
+SELECT notification_id,
+       notification_type,
+       title,
+       message,
+       is_read,
+       created_at
+FROM notifications
+WHERE student_id = 2311
+ORDER BY created_at DESC
+LIMIT 10 OFFSET 0;
+```
+
+### Filter by Type
+```sql
+SELECT *
+FROM notifications
+WHERE student_id = 2311
+AND notification_type = 'Placement'
+ORDER BY created_at DESC;
+```
+
+### Unread Notifications
+```sql
+SELECT *
+FROM notifications
+WHERE student_id = 2311
+AND is_read = FALSE
+ORDER BY created_at DESC;
+```
+
+### Unread Count
+```sql
+SELECT COUNT(*)
+FROM notifications
+WHERE student_id = 2311
+AND is_read = FALSE;
+```
+
+### Mark Notification as Read
+```sql
+UPDATE notifications
+SET is_read = TRUE
+WHERE notification_id = 101;
+```
+
+### Mark All as Read
+```sql
+UPDATE notifications
+SET is_read = TRUE
+WHERE student_id = 2311
+AND is_read = FALSE;
+```
+
+### Create Notification
+```sql
+INSERT INTO notifications
+(
+    student_id,
+    notification_type,
+    title,
+    message
+)
+VALUES
+(
+    2311,
+    'Placement',
+    'Amazon Hiring',
+    'Amazon has opened applications.'
+);
+```
+
+## 8. Why PostgreSQL Over MongoDB?
+
+| PostgreSQL | MongoDB |
+| ---------- | ------- |
+| Strong ACID compliance | Eventual consistency in many deployments |
+| Excellent SQL filtering | Flexible document model |
+| Powerful indexing | Flexible indexing |
+| Mature partitioning and replication | Good horizontal scaling |
+| Ideal for structured notification records | Better suited for rapidly changing schemas |
+
+Given the evaluation requirements—filtering, pagination, sorting, indexing, and SQL optimization—PostgreSQL is the stronger choice.
+
+## High-Level Database Architecture
+```text
+                Client
+                   │
+                   ▼
+            Notification API
+                   │
+         ┌─────────┴─────────┐
+         ▼                   ▼
+     Redis Cache       PostgreSQL Primary
+                             │
+                    ┌────────┴────────┐
+                    ▼                 ▼
+              Read Replica 1    Read Replica 2
+```
