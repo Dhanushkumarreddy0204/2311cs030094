@@ -178,17 +178,17 @@ WebSockets are the preferred solution for this notification platform. Even thoug
 
 ## 1. Choose the Database
 
-**Recommended Choice: PostgreSQL**
+**Recommended Choice: MySQL**
 
-### Why PostgreSQL?
-- ACID-compliant transactions ensure reliable updates.
-- Excellent indexing capabilities (B-Tree, Hash, GIN, BRIN).
+### Why MySQL?
+- ACID-compliant transactions (InnoDB) ensure reliable updates.
+- Excellent indexing capabilities (B-Tree, Hash).
 - Supports millions of records efficiently.
 - Powerful SQL for filtering, sorting, and pagination.
 - Mature replication and partitioning support.
 - Widely used in enterprise notification systems.
 
-Although a NoSQL database like MongoDB could work, the notification data is structured and requires frequent filtering, sorting, and joins, making PostgreSQL a stronger fit.
+Although a NoSQL database like MongoDB could work, the notification data is structured and requires frequent filtering, sorting, and joins, making MySQL a stronger fit.
 
 ## 2. Database Schema
 
@@ -207,7 +207,7 @@ CREATE TABLE students (
 ### Notifications Table
 ```sql
 CREATE TABLE notifications (
-    notification_id BIGSERIAL PRIMARY KEY,
+    notification_id BIGINT AUTO_INCREMENT PRIMARY KEY,
     student_id BIGINT NOT NULL,
     notification_type VARCHAR(20) NOT NULL,
     title VARCHAR(255),
@@ -415,17 +415,17 @@ VALUES
 );
 ```
 
-## 8. Why PostgreSQL Over MongoDB?
+## 8. Why MySQL Over MongoDB?
 
-| PostgreSQL | MongoDB |
+| MySQL | MongoDB |
 | ---------- | ------- |
-| Strong ACID compliance | Eventual consistency in many deployments |
+| Strong ACID compliance (InnoDB) | Eventual consistency in many deployments |
 | Excellent SQL filtering | Flexible document model |
 | Powerful indexing | Flexible indexing |
 | Mature partitioning and replication | Good horizontal scaling |
 | Ideal for structured notification records | Better suited for rapidly changing schemas |
 
-Given the evaluation requirements—filtering, pagination, sorting, indexing, and SQL optimization—PostgreSQL is the stronger choice.
+Given the evaluation requirements—filtering, pagination, sorting, indexing, and SQL optimization—MySQL is the stronger choice.
 
 ## High-Level Database Architecture
 ```text
@@ -436,7 +436,7 @@ Given the evaluation requirements—filtering, pagination, sorting, indexing, an
                    │
          ┌─────────┴─────────┐
          ▼                   ▼
-     Redis Cache       PostgreSQL Primary
+     Redis Cache       MySQL Primary
                              │
                     ┌────────┴────────┐
                     ▼                 ▼
@@ -458,7 +458,7 @@ ORDER BY created_at ASC;
 
 When executing this query against a table containing **5,000,000** records without appropriate indexes, the database engine encounters several significant performance bottlenecks:
 
-- **Full Table Scan (Seq Scan):** Without an index on `student_id` or `is_read`, PostgreSQL is forced to read every single row from the disk into memory to evaluate the `WHERE` clause. This results in time complexity approaching $O(N)$, causing massive disk I/O and skyrocketing CPU usage.
+- **Full Table Scan (Seq Scan):** Without an index on `student_id` or `is_read`, MySQL is forced to read every single row from the disk into memory to evaluate the `WHERE` clause. This results in time complexity approaching $O(N)$, causing massive disk I/O and skyrocketing CPU usage.
 - **Sorting Overhead:** After filtering, the database must perform an in-memory or disk-based sort (e.g., QuickSort) on the resulting dataset to satisfy the `ORDER BY created_at ASC` clause. Sorting thousands of rows dynamically adds substantial latency.
 - **Inefficiency of `SELECT *`:** Retrieving all columns (including potentially large text fields like `message`) forces the database to fetch data that the application may not even need. This drastically increases memory consumption, bloats network payload size, and reduces the efficiency of cache hits.
 - **Expected Execution Plan:** The query planner will likely fall back to a `Seq Scan` on the `notifications` table, followed by a costly `Sort` node. 
@@ -503,7 +503,7 @@ While indexing is a powerful tool, creating an index on every column is a severe
 - **Storage Overhead:** Indexes are separate data structures (usually B-Trees) stored on disk. Indexing every column could cause the index footprint to exceed the actual table size, significantly increasing storage costs.
 - **Write Amplification (INSERT/UPDATE/DELETE):** Every time a new notification is inserted, updated, or deleted, the database must not only write to the main table but also update *every single index* associated with it. This creates massive lock contention and severely degrades write throughput.
 - **Maintenance Cost:** More indexes require more frequent `VACUUM` operations, bloat management, and statistics recalculations.
-- **Query Planner Confusion:** An excessive number of overlapping indexes forces the PostgreSQL query planner to evaluate too many possible execution paths, which adds planning overhead and occasionally leads to suboptimal index choices.
+- **Query Planner Confusion:** An excessive number of overlapping indexes forces the MySQL query planner to evaluate too many possible execution paths, which adds planning overhead and occasionally leads to suboptimal index choices.
 
 **Best Practice:** Only create indexes to support high-frequency `WHERE` clauses, `JOIN` conditions, and `ORDER BY` operations.
 
@@ -519,7 +519,7 @@ SELECT
     created_at
 FROM notifications
 WHERE notification_type = 'Placement'
-  AND created_at >= NOW() - INTERVAL '7 days'
+  AND created_at >= NOW() - INTERVAL 7 DAY
 ORDER BY created_at DESC;
 ```
 
@@ -535,7 +535,7 @@ This index allows the engine to jump directly to 'Placement' records and travers
 
 ## 6. Verifying Optimizations with EXPLAIN ANALYZE
 
-In a production environment, theoretical assumptions must be verified. We use `EXPLAIN ANALYZE` to observe the actual execution plan generated by PostgreSQL:
+In a production environment, theoretical assumptions must be verified. We use `EXPLAIN ANALYZE` to observe the actual execution plan generated by MySQL:
 
 ```sql
 EXPLAIN ANALYZE
@@ -565,9 +565,9 @@ ORDER BY created_at ASC;
 
 ## 1. The Bottleneck: Why Querying PostgreSQL on Every Request is Inefficient
 
-In a high-traffic campus notification system, users frequently refresh pages, load their dashboards, and poll for unread notifications. Querying PostgreSQL directly for every single one of these read-heavy operations introduces severe architectural bottlenecks:
+In a high-traffic campus notification system, users frequently refresh pages, load their dashboards, and poll for unread notifications. Querying MySQL directly for every single one of these read-heavy operations introduces severe architectural bottlenecks:
 
-- **Database Bottlenecks & Disk I/O:** Relational databases are fundamentally bounded by disk I/O and CPU utilization. Fetching the same records repeatedly causes redundant disk reads (even if partially mitigated by Postgres buffer caches).
+- **Database Bottlenecks & Disk I/O:** Relational databases are fundamentally bounded by disk I/O and CPU utilization. Fetching the same records repeatedly causes redundant disk reads (even if partially mitigated by InnoDB buffer pool).
 - **CPU Utilization:** Evaluating complex `WHERE` clauses, applying limits, and sorting records constantly burns CPU cycles on the primary database, starving resources needed for critical write operations.
 - **Network Latency:** Direct database queries inherently carry higher latency compared to memory-based fetches.
 - **Scaling Problems & Traffic Spikes:** As the platform scales to handle thousands of concurrent students—especially during traffic spikes like massive campus placement announcements—the PostgreSQL connection pool will quickly exhaust. This leads to connection queuing, request timeouts, and catastrophic system degradation.
@@ -609,8 +609,8 @@ For this architecture, I strongly recommend integrating **Redis** (Remote Dictio
 (3a) Cache Hit    (3b) Cache Miss
    │                   │
    ▼                   ▼
-Return            ┌──────────────┐
-Response          │  PostgreSQL  │
+Return                  ┌──────────────┐
+Response          │    MySQL     │
                   └──────┬───────┘
                          │ (4) Fetch & Store in Redis
                          ▼
@@ -628,7 +628,7 @@ Our caching strategy must strictly target read-heavy, latency-sensitive endpoint
 - **Notification Metadata:** Static configuration data or overarching system announcements.
 
 **What NOT to Cache (Avoid Caching Writes):**
-Do not cache the actual `INSERT`, `UPDATE`, or `DELETE` operations (e.g., marking a notification as read). Writes should always go directly to PostgreSQL (the source of truth) to guarantee ACID compliance. Attempting to write to the cache first and asynchronously flush to the DB risks data loss, race conditions, and consistency tearing.
+Do not cache the actual `INSERT`, `UPDATE`, or `DELETE` operations (e.g., marking a notification as read). Writes should always go directly to MySQL (the source of truth) to guarantee ACID compliance. Attempting to write to the cache first and asynchronously flush to the DB risks data loss, race conditions, and consistency tearing.
 
 ## 5. Cache Keys
 
@@ -662,7 +662,7 @@ When an admin creates a notification, or a student marks a notification as read,
 2. **Redis Lookup:** The Express Controller (or Service) queries Redis for the key `notifications:user:1042:page:1`.
 3. **Cache Hit:** If the data exists, it is parsed from JSON and returned immediately to the client. PostgreSQL is completely bypassed.
 4. **Cache Miss:** If the key does not exist or has expired:
-   - The application executes the optimized query against PostgreSQL.
+   - The application executes the optimized query against MySQL.
    - The retrieved result is serialized to JSON and stored in Redis via `SETEX` with a defined TTL.
    - The response is returned to the client.
 
@@ -679,8 +679,8 @@ Integrating Redis into our existing Node.js/Express backend requires a clean sep
 
 - **Redis Client & Connection Pool:** Utilize `ioredis` or the official `redis` npm package to maintain a persistent connection pool to the Redis server.
 - **Environment Variables:** Connection strings must be strictly managed in `.env` (e.g., `REDIS_URL=redis://user:pass@localhost:6379`).
-- **Repository / Service Layer Abstraction:** The caching logic should reside in a dedicated Service Layer wrapping the Repository. Controllers should blindly request data, agnostic of whether it originated from Redis or Postgres.
-- **Error Handling & Fallback (CRITICAL):** The application must never crash if Redis goes down. All Redis operations must be wrapped in `try-catch` blocks. If a Redis timeout or failure occurs, the system must log the error and degrade gracefully by falling back to querying PostgreSQL directly.
+- **Repository / Service Layer Abstraction:** The caching logic should reside in a dedicated Service Layer wrapping the Repository. Controllers should blindly request data, agnostic of whether it originated from Redis or MySQL.
+- **Error Handling & Fallback (CRITICAL):** The application must never crash if Redis goes down. All Redis operations must be wrapped in `try-catch` blocks. If a Redis timeout or failure occurs, the system must log the error and degrade gracefully by falling back to querying MySQL directly.
 
 ## 10. Logging Strategy
 
@@ -690,7 +690,7 @@ Leveraging our existing custom logging middleware, we must instrument the cachin
 - **`[DEBUG]` Cache Hit:** `Key notifications:user:1042:page:1 found in cache.`
 - **`[DEBUG]` Cache Miss:** `Key notifications:user:1042:page:1 missing. Fetching from DB.`
 - **`[INFO]` Cache Invalidated:** Logged when manual invalidation occurs (e.g., after marking as read).
-- **`[WARN]` Fallback to PostgreSQL:** Logged if a Redis read operation times out, forcing a direct DB query.
+- **`[WARN]` Fallback to MySQL:** Logged if a Redis read operation times out, forcing a direct DB query.
 - **`[ERROR]` Redis Failure:** Logged if the Redis connection completely drops or authentication fails.
 
 ## 11. Scaling Discussion
@@ -722,22 +722,22 @@ To maintain a resilient, production-grade caching layer, adhere to these practic
 
 ## 14. Performance Comparison Table
 
-| Metric | Without Cache (PostgreSQL Only) | With Redis Cache |
+| Metric | Without Cache (MySQL Only) | With Redis Cache |
 | ------ | ------------------------------- | ---------------- |
 | **Database Load** | Very High (Queried on every API request) | Very Low (Offloaded to Redis) |
 | **Latency / Response Time** | ~50ms - 200ms+ (Disk I/O bound) | ~1ms - 5ms (RAM-based) |
-| **Scalability** | Hard limits on Postgres connection pools | Massively scalable horizontally |
+| **Scalability** | Hard limits on MySQL connection pools | Massively scalable horizontally |
 | **CPU Usage (DB)** | High (Constant Sorting & Filtering) | Low (Processes writes & cache misses) |
 | **Disk I/O** | High | Near zero for cached read operations |
-| **Network Calls** | Backend ↔ Postgres | Backend ↔ Redis |
+| **Network Calls** | Backend ↔ MySQL | Backend ↔ Redis |
 | **User Experience** | Degrades under heavy traffic load | Instant, snappy UI at all times |
 
 ## 15. Final Recommendation
 
-**Architecture:** `Node.js + PostgreSQL + Redis + WebSockets`
+**Architecture:** `Node.js + MySQL + Redis + WebSockets`
 
 This stack represents the gold standard for modern, high-scale notification platforms. 
-- **PostgreSQL** provides the iron-clad ACID guarantees and complex querying capabilities required for reliable, persistent data storage. 
+- **MySQL** provides the iron-clad ACID guarantees and complex querying capabilities required for reliable, persistent data storage. 
 - **Redis** acts as an ultra-fast buffer, shielding the relational database from redundant read traffic, granting the system sub-millisecond latency, and absorbing massive traffic spikes effortlessly. 
 - **WebSockets** complete the loop by providing instant, real-time push capabilities to connected clients. 
 

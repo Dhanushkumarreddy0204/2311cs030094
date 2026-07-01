@@ -1,27 +1,34 @@
-import { Pool } from "pg";
+import mysql from "mysql2/promise";
 import { Log } from "../logger";
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || "postgresql://user:password@localhost:5432/notification_system",
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || "localhost",
+  port: parseInt(process.env.DB_PORT || "3306"),
+  user: process.env.DB_USER || "user",
+  password: process.env.DB_PASSWORD || "password",
+  database: process.env.DB_NAME || "notification_system",
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
 });
 
 export const connectDB = async () => {
   try {
-    const client = await pool.connect();
+    const connection = await pool.getConnection();
     await Log("backend", "info", "db", "Database connected");
 
     // Initialize tables
-    await initializeDatabase();
+    await initializeDatabase(connection);
     
-    client.release();
+    connection.release();
   } catch (error: any) {
     console.error("DB Connection Error", error);
     await Log("backend", "error", "db", `DB Connection Error: ${error.message}`);
   }
 };
 
-const initializeDatabase = async () => {
-  const initSql = `
+const initializeDatabase = async (connection: mysql.PoolConnection) => {
+  const studentsSql = `
     CREATE TABLE IF NOT EXISTS students (
         student_id BIGINT PRIMARY KEY,
         full_name VARCHAR(100),
@@ -29,9 +36,11 @@ const initializeDatabase = async () => {
         department VARCHAR(50),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+  `;
 
+  const notificationsSql = `
     CREATE TABLE IF NOT EXISTS notifications (
-        notification_id BIGSERIAL PRIMARY KEY,
+        notification_id BIGINT AUTO_INCREMENT PRIMARY KEY,
         student_id BIGINT NOT NULL,
         notification_type VARCHAR(20) NOT NULL,
         title VARCHAR(255),
@@ -40,17 +49,34 @@ const initializeDatabase = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (student_id) REFERENCES students(student_id)
     );
-
-    CREATE INDEX IF NOT EXISTS idx_student_read_created ON notifications(student_id, is_read, created_at ASC);
-    CREATE INDEX IF NOT EXISTS idx_notification_type ON notifications(notification_type);
-    CREATE INDEX IF NOT EXISTS idx_notifications_type_created ON notifications(notification_type, created_at DESC);
   `;
+
   try {
-    await pool.query(initSql);
+    await connection.query(studentsSql);
+    await connection.query(notificationsSql);
+
+    // Create Indexes carefully avoiding ER_DUP_KEYNAME errors
+    await createIndex(connection, "idx_student_read_created", "notifications", "student_id, is_read, created_at ASC");
+    await createIndex(connection, "idx_notification_type", "notifications", "notification_type");
+    await createIndex(connection, "idx_notifications_type_created", "notifications", "notification_type, created_at DESC");
+
     console.log("Database initialized successfully.");
   } catch (error) {
     console.error("Error initializing database tables:", error);
   }
 };
 
-export const query = (text: string, params?: any[]) => pool.query(text, params);
+const createIndex = async (connection: mysql.PoolConnection, indexName: string, tableName: string, columns: string) => {
+  try {
+    await connection.query(`CREATE INDEX ${indexName} ON ${tableName} (${columns})`);
+  } catch (error: any) {
+    if (error.code !== "ER_DUP_KEYNAME") {
+      throw error;
+    }
+  }
+};
+
+export const query = async (text: string, params?: any[]) => {
+  const [result] = await pool.query(text, params);
+  return result;
+};
