@@ -6,10 +6,11 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: 5173,
     fs: {
       allow: [
-        // Allow serving files from one level up to the project root
-        '..'
+        // Allow serving files from two levels up (logger package)
+        '../..'
       ]
     }
   },
