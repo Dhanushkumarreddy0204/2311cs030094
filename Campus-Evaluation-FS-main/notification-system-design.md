@@ -560,3 +560,185 @@ ORDER BY created_at ASC;
 | **I/O & Memory** | High (`SELECT *` pulls unused data) | Low (Explicit column projection) |
 | **Execution Time** | Seconds (Depends on disk speed) | Milliseconds |
 | **Scalability** | Degrades linearly ($O(N)$) | Highly scalable ($O(\log N)$) |
+
+# Stage 4 – Performance & Caching
+
+## 1. The Bottleneck: Why Querying PostgreSQL on Every Request is Inefficient
+
+In a high-traffic campus notification system, users frequently refresh pages, load their dashboards, and poll for unread notifications. Querying PostgreSQL directly for every single one of these read-heavy operations introduces severe architectural bottlenecks:
+
+- **Database Bottlenecks & Disk I/O:** Relational databases are fundamentally bounded by disk I/O and CPU utilization. Fetching the same records repeatedly causes redundant disk reads (even if partially mitigated by Postgres buffer caches).
+- **CPU Utilization:** Evaluating complex `WHERE` clauses, applying limits, and sorting records constantly burns CPU cycles on the primary database, starving resources needed for critical write operations.
+- **Network Latency:** Direct database queries inherently carry higher latency compared to memory-based fetches.
+- **Scaling Problems & Traffic Spikes:** As the platform scales to handle thousands of concurrent students—especially during traffic spikes like massive campus placement announcements—the PostgreSQL connection pool will quickly exhaust. This leads to connection queuing, request timeouts, and catastrophic system degradation.
+
+To ensure high availability and responsiveness, we must introduce a caching layer to offload redundant reads from the primary database.
+
+## 2. Recommended Caching Solution: Redis
+
+For this architecture, I strongly recommend integrating **Redis** (Remote Dictionary Server).
+
+### Why Redis?
+- **Memory-Based Architecture:** Redis stores data entirely in RAM, enabling **sub-millisecond latency** for read operations, far exceeding the performance of disk-based relational databases.
+- **Key-Value Storage:** Its flexible data structures (strings, hashes, sorted sets) are perfect for caching paginated lists, counts, and metadata.
+- **Persistence Options:** While primarily an in-memory cache, Redis supports persistence (RDB snapshots and AOF logs) to prevent data loss across server restarts.
+- **High Throughput & Horizontal Scaling:** Redis can effortlessly handle hundreds of thousands of operations per second and scales horizontally via Redis Cluster.
+- **TTL Support:** Native Time-To-Live (TTL) support ensures stale data is automatically purged without requiring application-level cron jobs.
+- **Pub/Sub:** Redis provides native Publish/Subscribe functionality, which perfectly complements our existing WebSocket architecture for broadcasting real-time events across multiple backend nodes.
+
+## 3. Architecture Diagram
+
+```text
+       ┌───────────┐
+       │  Client   │
+       └─────┬─────┘
+             │ (1) Request
+             ▼
+    ┌─────────────────┐
+    │ Backend API     │
+    │ (Node/Express)  │
+    └────────┬────────┘
+             │ (2) Check Cache
+             ▼
+      ┌─────────────┐
+      │ Redis Cache │
+      └──────┬──────┘
+             │
+   ┌─────────┴─────────┐
+   │                   │
+(3a) Cache Hit    (3b) Cache Miss
+   │                   │
+   ▼                   ▼
+Return            ┌──────────────┐
+Response          │  PostgreSQL  │
+                  └──────┬───────┘
+                         │ (4) Fetch & Store in Redis
+                         ▼
+                  Return Response
+```
+
+## 4. Cache Strategy: What to Cache?
+
+Our caching strategy must strictly target read-heavy, latency-sensitive endpoints while avoiding the caching of rapidly mutating state. 
+
+**What to Cache:**
+- **Unread Notification Count:** Highly requested on every page load (e.g., the badge icon in the UI).
+- **Latest/Recently Viewed Notifications:** The first page (e.g., `page=1`, `limit=10`) of a student's notifications.
+- **Filtered Notification Lists:** Common filters like "Placement" or "Event".
+- **Notification Metadata:** Static configuration data or overarching system announcements.
+
+**What NOT to Cache (Avoid Caching Writes):**
+Do not cache the actual `INSERT`, `UPDATE`, or `DELETE` operations (e.g., marking a notification as read). Writes should always go directly to PostgreSQL (the source of truth) to guarantee ACID compliance. Attempting to write to the cache first and asynchronously flush to the DB risks data loss, race conditions, and consistency tearing.
+
+## 5. Cache Keys
+
+Consistent and heavily namespaced key naming is critical to prevent key collisions, simplify debugging, and allow for targeted invalidation.
+
+**Realistic Redis Key Examples:**
+- `notifications:user:1042:page:1` (Caches the first page of notifications for student 1042)
+- `notifications:user:1042:placement` (Caches placement-specific notifications for student 1042)
+- `notifications:user:1042:unread` (Caches the unread integer count)
+- `notification:1042:last10` (Caches a generic top 10 list)
+
+**Why good key naming matters:** Using a structured format like `entity:scope:identifier:modifier` allows for predictable key retrieval and wildcard purging (e.g., executing `SCAN` and `DEL` on `notifications:user:1042:*` when a user clicks "Mark All as Read").
+
+## 6. Cache Invalidation Strategy
+
+Cache invalidation is notoriously difficult. Let's evaluate the strategies:
+
+- **Time To Live (TTL):** Data expires automatically after a set duration. Excellent as a fallback safety net.
+- **Manual Invalidation:** Application code explicitly deletes keys on state change.
+- **Write-Through:** Cache and DB are updated simultaneously.
+- **Cache-Aside (Lazy Loading):** Application checks cache; on miss, fetches from DB, updates cache, and returns.
+- **Write-Behind:** Application writes to cache, which asynchronously writes to DB. (High risk of data loss).
+- **Event-Driven / WebSocket-Triggered:** Events emitted on state change automatically flush relevant keys across distributed nodes.
+
+**Recommended Strategy:** A hybrid approach utilizing **Cache-Aside with TTL** combined with **Manual Invalidation**.
+When an admin creates a notification, or a student marks a notification as read, the service layer manually invalidates the relevant `notifications:user:{id}:*` keys. Furthermore, all cached lists receive a baseline TTL (e.g., 5 minutes) to act as a safety net preventing permanently stale data in the event of an invalidation failure.
+
+## 7. Request Lifecycle (Cache Flow)
+
+1. **Client Request:** The student requests their dashboard notifications (`GET /api/v1/notifications`).
+2. **Redis Lookup:** The Express Controller (or Service) queries Redis for the key `notifications:user:1042:page:1`.
+3. **Cache Hit:** If the data exists, it is parsed from JSON and returned immediately to the client. PostgreSQL is completely bypassed.
+4. **Cache Miss:** If the key does not exist or has expired:
+   - The application executes the optimized query against PostgreSQL.
+   - The retrieved result is serialized to JSON and stored in Redis via `SETEX` with a defined TTL.
+   - The response is returned to the client.
+
+## 8. Data Freshness Trade-offs
+
+In distributed systems, the **CAP Theorem** dictates trade-offs between Consistency and Availability under Partition tolerance.
+
+- **Stale Cache vs. Fresh Cache:** By caching, we deliberately trade absolute immediate consistency for massive gains in performance and availability. 
+- **Why a few seconds of stale data is acceptable:** In a university notification system, if a student sees a placement announcement 5 seconds later than another student due to a TTL lag, the business impact is zero. However, if the database crashes because 50,000 students refreshed the page simultaneously, the business impact is critical (total outage). Therefore, slight staleness is a perfectly acceptable trade-off for high availability.
+
+## 9. Redis Integration Architecture
+
+Integrating Redis into our existing Node.js/Express backend requires a clean separation of concerns:
+
+- **Redis Client & Connection Pool:** Utilize `ioredis` or the official `redis` npm package to maintain a persistent connection pool to the Redis server.
+- **Environment Variables:** Connection strings must be strictly managed in `.env` (e.g., `REDIS_URL=redis://user:pass@localhost:6379`).
+- **Repository / Service Layer Abstraction:** The caching logic should reside in a dedicated Service Layer wrapping the Repository. Controllers should blindly request data, agnostic of whether it originated from Redis or Postgres.
+- **Error Handling & Fallback (CRITICAL):** The application must never crash if Redis goes down. All Redis operations must be wrapped in `try-catch` blocks. If a Redis timeout or failure occurs, the system must log the error and degrade gracefully by falling back to querying PostgreSQL directly.
+
+## 10. Logging Strategy
+
+Leveraging our existing custom logging middleware, we must instrument the caching layer to ensure deep system observability:
+
+- **`[INFO]` Redis Connected:** Logged once on application startup.
+- **`[DEBUG]` Cache Hit:** `Key notifications:user:1042:page:1 found in cache.`
+- **`[DEBUG]` Cache Miss:** `Key notifications:user:1042:page:1 missing. Fetching from DB.`
+- **`[INFO]` Cache Invalidated:** Logged when manual invalidation occurs (e.g., after marking as read).
+- **`[WARN]` Fallback to PostgreSQL:** Logged if a Redis read operation times out, forcing a direct DB query.
+- **`[ERROR]` Redis Failure:** Logged if the Redis connection completely drops or authentication fails.
+
+## 11. Scaling Discussion
+
+As the platform scales to support millions of notifications and thousands of concurrent users, a single Redis instance will eventually reach its memory or CPU limits.
+
+- **Horizontal Scaling & Redis Cluster:** Data can be sharded across multiple Redis nodes automatically using Redis Cluster, distributing the memory capacity and computational load.
+- **High Availability & Replication:** Employ **Redis Sentinel** to monitor primary-replica setups. If the primary cache node fails, Sentinel automatically promotes a read replica to primary, ensuring zero downtime (Failover).
+- **Enterprise Deployment:** In a production cloud environment, utilizing fully managed services like AWS ElastiCache, Azure Cache for Redis, or Google Cloud Memorystore abstracts away the infrastructure maintenance overhead.
+
+## 12. Security
+
+Redis is notoriously fast because it bypasses many traditional database security overheads. Therefore, it must be secured architecturally:
+- **Network Isolation:** Redis should NEVER be exposed to the public internet. It must reside strictly in a private VPC subnet, accessible only by the Backend API instances.
+- **Authentication:** Enforce strict password authentication (`AUTH`) or Access Control Lists (ACLs) to restrict commands (e.g., disabling `FLUSHALL` for application users).
+- **Encryption:** Use TLS/SSL for data in transit between the Node.js backend and the Redis server.
+- **Data Sensitivity:** Avoid storing highly sensitive PII in the cache unnecessarily. If required, encrypt the payload before caching.
+- **Rate Limiting:** Redis itself serves as an excellent datastore to implement IP-based rate limiting to protect the backend from DDoS attacks or API abuse.
+
+## 13. Best Practices
+
+To maintain a resilient, production-grade caching layer, adhere to these practices:
+- **Avoid Caching Everything:** Only cache high-read, expensive queries. Unread counts and Page 1 lists yield the highest ROI.
+- **Choose Appropriate TTLs:** Never cache data infinitely. Always set a TTL (e.g., 300 seconds) to prevent memory leaks and permanent stale data.
+- **Monitor Cache Hit Ratio:** A low hit ratio (<50%) indicates ineffective caching or poor key design; a high hit ratio (>90%) indicates excellent offloading.
+- **Avoid Cache Stampede:** Implement techniques like probabilistic early expiration or distributed locks (Redlock) to prevent thousands of requests hitting the database simultaneously when a highly popular key expires.
+- **Compress Large Payloads:** If caching massive arrays of notifications, use Snappy or Gzip compression before storing in Redis to save RAM and minimize network latency.
+- **Invalidate Intelligently:** Use focused invalidation on specific user keys rather than blindly flushing large scopes of the database.
+
+## 14. Performance Comparison Table
+
+| Metric | Without Cache (PostgreSQL Only) | With Redis Cache |
+| ------ | ------------------------------- | ---------------- |
+| **Database Load** | Very High (Queried on every API request) | Very Low (Offloaded to Redis) |
+| **Latency / Response Time** | ~50ms - 200ms+ (Disk I/O bound) | ~1ms - 5ms (RAM-based) |
+| **Scalability** | Hard limits on Postgres connection pools | Massively scalable horizontally |
+| **CPU Usage (DB)** | High (Constant Sorting & Filtering) | Low (Processes writes & cache misses) |
+| **Disk I/O** | High | Near zero for cached read operations |
+| **Network Calls** | Backend ↔ Postgres | Backend ↔ Redis |
+| **User Experience** | Degrades under heavy traffic load | Instant, snappy UI at all times |
+
+## 15. Final Recommendation
+
+**Architecture:** `Node.js + PostgreSQL + Redis + WebSockets`
+
+This stack represents the gold standard for modern, high-scale notification platforms. 
+- **PostgreSQL** provides the iron-clad ACID guarantees and complex querying capabilities required for reliable, persistent data storage. 
+- **Redis** acts as an ultra-fast buffer, shielding the relational database from redundant read traffic, granting the system sub-millisecond latency, and absorbing massive traffic spikes effortlessly. 
+- **WebSockets** complete the loop by providing instant, real-time push capabilities to connected clients. 
+
+By strategically deploying this hybrid architecture, we achieve a fault-tolerant, highly available, and massively scalable platform capable of delivering millions of campus notifications seamlessly without compromising on performance or reliability.
