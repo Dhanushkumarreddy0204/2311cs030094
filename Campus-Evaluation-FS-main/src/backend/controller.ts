@@ -47,7 +47,11 @@ export const fetchUnreadCount = async (req: Request, res: Response) => {
 
 export const markAsRead = async (req: Request, res: Response) => {
   try {
-    const notificationId = parseInt(req.params.id);
+    const idParam = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const notificationId = Number.parseInt(idParam ?? "", 10);
+    if (Number.isNaN(notificationId)) {
+      return res.status(400).json({ success: false, message: "Invalid notification id" });
+    }
     await Log("backend", "info", "controller", `Marking notification ${notificationId} as read`);
     
     const success = await service.markNotificationAsRead(STUDENT_ID, notificationId);
@@ -111,7 +115,11 @@ export const createNotification = async (req: Request, res: Response) => {
 
 export const deleteNotification = async (req: Request, res: Response) => {
   try {
-    const notificationId = parseInt(req.params.id);
+    const idParam = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const notificationId = Number.parseInt(idParam ?? "", 10);
+    if (Number.isNaN(notificationId)) {
+      return res.status(400).json({ success: false, message: "Invalid notification id" });
+    }
     await Log("backend", "info", "controller", `Deleting notification ${notificationId}`);
     
     const success = await service.deleteNotification(STUDENT_ID, notificationId);

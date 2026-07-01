@@ -1,4 +1,4 @@
-import {
+import type {
     LogLevel,
     PackageName,
     Stack
@@ -29,31 +29,50 @@ const TOKEN_REFRESH_BUFFER_MS   = 60_000; // Refresh 1 min before actual expiry
 // Environment helpers
 // =============================================================================
 
+function getViteEnv(): Record<string, string | undefined> {
+    if (typeof process !== "undefined" && process.env) {
+        return process.env as Record<string, string | undefined>;
+    }
+
+    try {
+        const meta = Function("return import.meta")() as { env?: Record<string, string | undefined> };
+        return meta?.env ?? {};
+    } catch {
+        return {};
+    }
+}
+
 /** Returns the base URL for the evaluation service. */
 function getBaseUrl(): string {
+    const env = getViteEnv();
+
     // Backend: process.env (Node.js / dotenv)
-    if (typeof process !== "undefined" && process.env?.BASE_URL) {
-        return process.env.BASE_URL.trim();
+    if (env.BASE_URL) {
+        return env.BASE_URL.trim();
     }
-    // Frontend: import.meta.env (Vite — MUST be prefixed with VITE_)
-    if (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_BASE_URL) {
-        return ((import.meta as any).env.VITE_BASE_URL as string).trim();
+
+    // Frontend: Vite env (must be prefixed with VITE_)
+    if (env.VITE_BASE_URL) {
+        return env.VITE_BASE_URL.trim();
     }
+
     return "http://4.224.186.213/evaluation-service";
 }
 
 /** Returns the static token from environment (before any refresh logic). */
 function getEnvToken(): string | null {
+    const env = getViteEnv();
+
     // 1. Backend: process.env.ACCESS_TOKEN
-    if (typeof process !== "undefined" && process.env?.ACCESS_TOKEN) {
-        return process.env.ACCESS_TOKEN.trim();
+    if (env.ACCESS_TOKEN) {
+        return env.ACCESS_TOKEN.trim();
     }
-    // 2. Frontend: import.meta.env.VITE_ACCESS_TOKEN
-    //    Vite ONLY exposes vars prefixed with VITE_ to the browser bundle.
-    //    Plain ACCESS_TOKEN is never forwarded to the frontend at build time.
-    if (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_ACCESS_TOKEN) {
-        return ((import.meta as any).env.VITE_ACCESS_TOKEN as string).trim();
+
+    // 2. Frontend: Vite env (must be prefixed with VITE_)
+    if (env.VITE_ACCESS_TOKEN) {
+        return env.VITE_ACCESS_TOKEN.trim();
     }
+
     return null;
 }
 

@@ -1,18 +1,18 @@
-import amqp, { Connection, Channel } from "amqplib";
+import amqp from "amqplib";
+import type { Connection, Channel } from "amqplib";
 import { Log } from "../logger";
 
 let connection: Connection | null = null;
 let channel: Channel | null = null;
 
-export const connectRabbitMQ = async () => {
+export const connectRabbitMQ = async (): Promise<Channel> => {
   if (channel) return channel;
-  
+
   try {
     const url = process.env.RABBITMQ_URL || "amqp://guest:guest@localhost:5672";
     connection = await amqp.connect(url);
     channel = await connection.createChannel();
-    
-    // Setup exchange and queues
+
     await channel.assertExchange("dlx", "direct", { durable: true });
     await channel.assertQueue("dlq.email", { durable: true });
     await channel.bindQueue("dlq.email", "dlx", "dlq.email");

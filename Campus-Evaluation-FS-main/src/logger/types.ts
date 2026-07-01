@@ -16,6 +16,7 @@ export type BackendPackage =
   | "db"
   | "domain"
   | "handler"
+  | "redis"
   | "repository"
   | "route"
   | "service";
