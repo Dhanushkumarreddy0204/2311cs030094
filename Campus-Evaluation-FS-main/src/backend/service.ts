@@ -53,6 +53,21 @@ export const createNotification = async (studentId: number, type: string, title:
   return id;
 };
 
+export const createBulkNotifications = async (studentIds: number[], type: string, title: string, message: string) => {
+  const insertId = await repo.createBulkNotifications(studentIds, type, title, message);
+  
+  // Invalidate cache for all affected students
+  for (const studentId of studentIds) {
+    await invalidateCache(`notifications:user:${studentId}:*`);
+  }
+  
+  return insertId;
+};
+
+export const getAllStudentIds = async () => {
+  return await repo.getAllStudentIds();
+};
+
 export const deleteNotification = async (studentId: number, notificationId: number) => {
   const success = await repo.deleteNotification(notificationId);
   if (success) {

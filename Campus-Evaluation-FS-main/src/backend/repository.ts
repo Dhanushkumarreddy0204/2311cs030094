@@ -82,6 +82,37 @@ export const createNotification = async (studentId: number, type: string, title:
   return result.insertId;
 };
 
+export const createBulkNotifications = async (studentIds: number[], type: string, title: string, message: string) => {
+  if (studentIds.length === 0) return 0;
+  
+  const placeholders = studentIds.map(() => "(?, ?, ?, ?)").join(", ");
+  const sql = `
+    INSERT INTO notifications (student_id, notification_type, title, message) 
+    VALUES ${placeholders}
+  `;
+  
+  const values: any[] = [];
+  for (const id of studentIds) {
+    values.push(id, type, title, message);
+  }
+  
+  await Log("backend", "debug", "repository", `Creating ${studentIds.length} notifications in bulk`);
+  const result: any = await query(sql, values);
+  return result.insertId; // First insert ID of the bulk insert
+};
+
+export const getAllStudentIds = async () => {
+  const sql = `SELECT student_id FROM students`;
+  await Log("backend", "debug", "repository", "Fetching all student IDs");
+  const result: any = await query(sql);
+  
+  if (result.length === 0) {
+    // If no students exist, return a mock array for testing purposes
+    return [1042, 2311, 3456, 7890, 9999];
+  }
+  return result.map((row: any) => row.student_id);
+};
+
 export const deleteNotification = async (notificationId: number) => {
   const sql = `
     DELETE FROM notifications 

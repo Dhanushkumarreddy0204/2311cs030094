@@ -1,3 +1,4 @@
+import { publishToQueue } from "./rabbitmq";
 import { Request, Response } from "express";
 import { Log } from "../logger";
 import * as service from "./service";
@@ -73,15 +74,26 @@ export const markAllAsRead = async (req: Request, res: Response) => {
 export const createNotification = async (req: Request, res: Response) => {
   try {
     const { title, message, type } = req.body;
-    await Log("backend", "info", "controller", "Creating notification");
+    await Log("backend", "info", "controller", "Creating broadcast notification");
     
-    const notificationId = await service.createNotification(STUDENT_ID, type, title, message);
+    // 1. Fetch all student IDs
+    const studentIds = await service.getAllStudentIds();
     
-    // Broadcast via WebSockets
+    // 2. Transactional Boundary: Save to MySQL FIRST
+    const firstNotificationId = await service.createBulkNotifications(studentIds, type, title, message);
+    
+    // 3. Publish lightweight messages to RabbitMQ
+    for (const studentId of studentIds) {
+      const payload = { studentId, title, message, type };
+      await publishToQueue("email_queue", payload);
+    }
+    
+    await Log("backend", "info", "controller", `Queued ${studentIds.length} notifications for async processing`);
+
+    // Broadcast via WebSockets (simulated for one or general room in real app, broadcasting globally here)
     if (io) {
       io.emit('new_notification', {
-        id: notificationId,
-        studentId: STUDENT_ID,
+        id: firstNotificationId,
         type,
         title,
         message,
@@ -90,7 +102,8 @@ export const createNotification = async (req: Request, res: Response) => {
       });
     }
 
-    res.status(201).json({ notificationId, message: "Notification created successfully" });
+    // 4. Return immediately to the user
+    res.status(202).json({ message: "Notifications queued for processing" });
   } catch (error: any) {
     await handleError(error, req, res);
   }
