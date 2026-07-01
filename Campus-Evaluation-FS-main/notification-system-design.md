@@ -442,3 +442,108 @@ Given the evaluation requirements—filtering, pagination, sorting, indexing, an
                     ▼                 ▼
               Read Replica 1    Read Replica 2
 ```
+
+# Stage 3 – Query Optimization
+
+## 1. Why the Original Query Is Slow
+
+**Original query:**
+```sql
+SELECT *
+FROM notifications
+WHERE student_id = 1042
+AND is_read = FALSE
+ORDER BY created_at ASC;
+```
+
+### Possible Problems
+1. **Full Table Scan:** If there is no suitable index, the database must read all 5,000,000 rows, and check the `student_id` and `is_read` filters for every single one. Time complexity approaches O(N).
+2. **Expensive Sorting:** Even if rows are filtered correctly, the database still needs to sort thousands of remaining rows by `created_at`.
+3. **Returning All Columns:** Using `SELECT *` retrieves every column, including those the application may not need. This increases disk I/O, memory usage, and network bandwidth. It is preferred to select only the required columns.
+
+## 2. Optimize the Query
+
+### Composite Index
+**Create:**
+```sql
+CREATE INDEX idx_student_read_created
+ON notifications(student_id, is_read, created_at);
+```
+**Why This Works:**
+The database can locate the student's records, filter unread notifications, and return them already ordered by `created_at`. No additional sort operation is needed.
+
+### Optimized Query
+```sql
+SELECT
+    notification_id,
+    title,
+    message,
+    notification_type,
+    created_at
+FROM notifications
+WHERE student_id = 1042
+  AND is_read = FALSE
+ORDER BY created_at ASC;
+```
+This reduces unnecessary data transfer.
+
+## 3. Why Not Index Every Column?
+
+At first glance, indexing every column sounds beneficial, but it causes several problems:
+- **Increased Storage:** Every index consumes additional disk space. With millions of records, storage requirements can become significant.
+- **Slower Writes:** Every `INSERT`, `UPDATE`, or `DELETE` must update every affected index. More indexes mean slower write performance.
+- **Higher Maintenance Cost:** Indexes require maintenance, statistics updates, and periodic reorganization. Too many indexes increase database overhead.
+- **Optimizer Confusion:** When many indexes exist, the query planner has more choices to evaluate, which can occasionally lead to less efficient execution plans.
+
+**Best Practice:** Create indexes only on:
+- Frequently filtered columns
+- Join columns
+- Sorting columns
+- Foreign keys
+- High-frequency search fields
+
+## 4. Query Placement Notifications From the Last 7 Days
+
+```sql
+SELECT
+    notification_id,
+    title,
+    message,
+    created_at
+FROM notifications
+WHERE notification_type = 'Placement'
+  AND created_at >= NOW() - INTERVAL '7 days'
+ORDER BY created_at DESC;
+```
+
+## 5. Recommended Index for This Query
+
+```sql
+CREATE INDEX idx_type_created
+ON notifications(notification_type, created_at DESC);
+```
+This supports both filtering and ordering efficiently.
+
+## 6. Performance Comparison
+
+| Without Index | With Composite Index |
+| ------------- | -------------------- |
+| Full table scan | Index scan |
+| Extra sort required | Rows already ordered |
+| High disk I/O | Reduced disk I/O |
+| Slower response | Faster response |
+| Poor scalability | Suitable for millions of rows |
+
+## 7. Explain the Execution Plan
+
+To verify performance rather than relying on assumptions, you can inspect queries using `EXPLAIN ANALYZE`:
+```sql
+EXPLAIN ANALYZE
+SELECT ...
+```
+This tool allows you to inspect:
+- Sequential scans
+- Index scans
+- Sort operations
+- Actual execution time
+- Rows processed
