@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { Log } from "../logger";
-import * as repo from "./repository";
+import * as service from "./service";
 import { handleError } from "./handler";
 import { io } from "./server"; // For WebSocket broadcasting
 
@@ -20,7 +20,7 @@ export const fetchNotifications = async (req: Request, res: Response) => {
     const isReadParam = req.query.isRead as string | undefined;
     const isRead = isReadParam ? isReadParam.toLowerCase() === 'true' : undefined;
 
-    const result = await repo.getNotifications(STUDENT_ID, limit, offset, type, isRead);
+    const result = await service.getNotifications(STUDENT_ID, limit, offset, type, isRead);
     
     res.status(200).json({
       page,
@@ -37,7 +37,7 @@ export const fetchNotifications = async (req: Request, res: Response) => {
 export const fetchUnreadCount = async (req: Request, res: Response) => {
   try {
     await Log("backend", "info", "controller", "Fetching unread count");
-    const unreadCount = await repo.getUnreadCount(STUDENT_ID);
+    const unreadCount = await service.getUnreadCount(STUDENT_ID);
     res.status(200).json({ unreadCount });
   } catch (error: any) {
     await handleError(error, req, res);
@@ -49,7 +49,7 @@ export const markAsRead = async (req: Request, res: Response) => {
     const notificationId = parseInt(req.params.id);
     await Log("backend", "info", "controller", `Marking notification ${notificationId} as read`);
     
-    const success = await repo.markNotificationAsRead(notificationId);
+    const success = await service.markNotificationAsRead(STUDENT_ID, notificationId);
     if (!success) {
       return res.status(404).json({ success: false, message: "Notification Not Found" });
     }
@@ -63,7 +63,7 @@ export const markAsRead = async (req: Request, res: Response) => {
 export const markAllAsRead = async (req: Request, res: Response) => {
   try {
     await Log("backend", "info", "controller", "Marking all notifications as read");
-    const updated = await repo.markAllNotificationsAsRead(STUDENT_ID);
+    const updated = await service.markAllNotificationsAsRead(STUDENT_ID);
     res.status(200).json({ updated, message: "All notifications marked as read" });
   } catch (error: any) {
     await handleError(error, req, res);
@@ -75,7 +75,7 @@ export const createNotification = async (req: Request, res: Response) => {
     const { title, message, type } = req.body;
     await Log("backend", "info", "controller", "Creating notification");
     
-    const notificationId = await repo.createNotification(STUDENT_ID, type, title, message);
+    const notificationId = await service.createNotification(STUDENT_ID, type, title, message);
     
     // Broadcast via WebSockets
     if (io) {
@@ -101,7 +101,7 @@ export const deleteNotification = async (req: Request, res: Response) => {
     const notificationId = parseInt(req.params.id);
     await Log("backend", "info", "controller", `Deleting notification ${notificationId}`);
     
-    const success = await repo.deleteNotification(notificationId);
+    const success = await service.deleteNotification(STUDENT_ID, notificationId);
     if (!success) {
       return res.status(404).json({ success: false, message: "Notification Not Found" });
     }
