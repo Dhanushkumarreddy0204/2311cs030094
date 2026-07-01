@@ -41,8 +41,9 @@ const initializeDatabase = async () => {
         FOREIGN KEY (student_id) REFERENCES students(student_id)
     );
 
-    CREATE INDEX IF NOT EXISTS idx_student_read_created ON notifications(student_id, is_read, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_student_read_created ON notifications(student_id, is_read, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_notification_type ON notifications(notification_type);
+    CREATE INDEX IF NOT EXISTS idx_notifications_type_created ON notifications(notification_type, created_at DESC);
   `;
   try {
     await pool.query(initSql);
