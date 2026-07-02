@@ -27,7 +27,7 @@ This project is a full-stack notification platform for a campus environment. It 
 
 ## Result preview
 
-![Notification dashboard preview](img/Screenshot%202026-07-01%20131614.png)
+![Notification dashboard preview](Campus-Evaluation-FS-main/img/Screenshot%202026-07-01%20131614.png)
 
 ## How to run it
 

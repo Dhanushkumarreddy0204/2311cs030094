@@ -216,8 +216,7 @@ export function useNotifications() {
   useEffect(() => {
     loadNotifications();
     loadUnreadCount();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadNotifications, loadUnreadCount]);
 
   return {
     state,

@@ -1,19 +1,34 @@
 import mysql from "mysql2/promise";
 import { Log } from "../logger";
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || "localhost",
-  port: parseInt(process.env.DB_PORT || "3306"),
-  user: process.env.DB_USER || "user",
-  password: process.env.DB_PASSWORD || "password",
-  database: process.env.DB_NAME || "notification_system",
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+let pool: mysql.Pool;
 
 export const connectDB = async () => {
   try {
+    // 1. First, connect without specifying a database to create it if it doesn't exist
+    const setupConnection = await mysql.createConnection({
+      host: process.env.DB_HOST || "localhost",
+      port: parseInt(process.env.DB_PORT || "3306"),
+      user: process.env.DB_USER || "user",
+      password: process.env.DB_PASSWORD || "password",
+    });
+    
+    const dbName = process.env.DB_NAME || "notification_system";
+    await setupConnection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\`;`);
+    await setupConnection.end();
+
+    // 2. Now create the main pool bound to the database
+    pool = mysql.createPool({
+      host: process.env.DB_HOST || "localhost",
+      port: parseInt(process.env.DB_PORT || "3306"),
+      user: process.env.DB_USER || "user",
+      password: process.env.DB_PASSWORD || "password",
+      database: dbName,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+
     const connection = await pool.getConnection();
     await Log("backend", "info", "db", "Database connected");
 

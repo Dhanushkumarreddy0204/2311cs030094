@@ -2,8 +2,8 @@ import amqp from "amqplib";
 import type { Connection, Channel } from "amqplib";
 import { Log } from "../logger";
 
-let connection: Connection | null = null;
-let channel: Channel | null = null;
+let connection: any = null;
+let channel: any = null;
 
 export const connectRabbitMQ = async (): Promise<Channel> => {
   if (channel) return channel;

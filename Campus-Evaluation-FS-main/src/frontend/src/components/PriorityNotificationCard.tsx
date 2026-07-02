@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import DoneIcon from "@mui/icons-material/Done";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import type { Notification } from "../types/notification";
 import { PRIORITY_WEIGHTS } from "../types/notification";
 import { formatRelativeTime } from "../utils/priority";

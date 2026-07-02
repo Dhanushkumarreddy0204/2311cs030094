@@ -7,14 +7,17 @@ import type {
 // =============================================================================
 // CREDENTIALS — used for automatic token refresh when a 401 is detected
 // =============================================================================
-const AUTH_CREDENTIALS = {
-    name:         "dhanush",
-    email:        "cdhnaushkumarreddy@gmail.com",
-    rollNo:       "2311cs030094",
-    accessCode:   "xpQddd",
-    clientID:     "f48a57cf-1b70-4fd6-9529-19d119d9f292",
-    clientSecret: "FSvXtuhEtYHJCDHk",
-};
+function getAuthCredentials() {
+    const env = getViteEnv();
+    return {
+        name:         env.NAME || env.VITE_NAME || "",
+        email:        env.EMAIL || env.VITE_EMAIL || "",
+        rollNo:       env.ROLL_NO || env.VITE_ROLL_NO || "",
+        accessCode:   env.ACCESS_CODE || env.VITE_ACCESS_CODE || "",
+        clientID:     env.CLIENT_ID || env.VITE_CLIENT_ID || "",
+        clientSecret: env.CLIENT_SECRET || env.VITE_CLIENT_SECRET || "",
+    };
+}
 
 // =============================================================================
 // In-memory token cache (module-level singleton).
@@ -80,11 +83,7 @@ function getEnvToken(): string | null {
 // JWT expiry check (pure function — no third-party dependency)
 // =============================================================================
 
-/**
- * Decodes the JWT payload and returns the `exp` field as a Unix epoch in ms.
- * Returns 0 on any parse error (treated as already-expired).
- */
-function getTokenExpiryMs(token: string): number {
+function decodeJwt(token: string): number {
     try {
         const parts = token.split(".");
         if (parts.length !== 3) return 0;
@@ -97,9 +96,8 @@ function getTokenExpiryMs(token: string): number {
     }
 }
 
-/** Returns true if the given token is expired or will expire within the buffer window. */
-function isTokenExpiredOrNearExpiry(token: string): boolean {
-    const expiryMs = getTokenExpiryMs(token);
+function isTokenExpired(token: string): boolean {
+    const expiryMs = decodeJwt(token);
     return Date.now() >= expiryMs - TOKEN_REFRESH_BUFFER_MS;
 }
 
@@ -107,24 +105,19 @@ function isTokenExpiredOrNearExpiry(token: string): boolean {
 // Token refresh  — POST /evaluation-service/auth
 // =============================================================================
 
-/**
- * Calls the evaluation service auth endpoint and returns a fresh access token.
- * Returns null if the refresh fails (logger must degrade gracefully).
- */
-async function refreshToken(): Promise<string | null> {
+async function authenticate(): Promise<string | null> {
     const baseUrl = getBaseUrl();
-    console.warn("[Logger] Access token expired or near expiry — refreshing...");
+    const creds = getAuthCredentials();
 
     try {
         const res = await fetch(`${baseUrl}/auth`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(AUTH_CREDENTIALS),
+            body: JSON.stringify(creds),
         });
 
         if (!res.ok) {
-            const body = await res.text().catch(() => "(unreadable)");
-            console.error(`[Logger] Token refresh failed: HTTP ${res.status}`, body);
+            console.warn("[Logger] Authentication failed");
             return null;
         }
 
@@ -132,14 +125,14 @@ async function refreshToken(): Promise<string | null> {
         const newToken = data.access_token ?? data.token ?? null;
 
         if (!newToken) {
-            console.error("[Logger] Token refresh response missing access_token field", data);
+            console.warn("[Logger] Authentication failed");
             return null;
         }
 
-        console.info("[Logger] Token refreshed successfully.");
+        console.info("[Logger] Token refreshed");
         return newToken;
     } catch (err) {
-        console.error("[Logger] Token refresh request threw:", err);
+        console.warn("[Logger] Authentication failed");
         return null;
     }
 }
@@ -148,51 +141,32 @@ async function refreshToken(): Promise<string | null> {
 // Token resolution with auto-refresh
 // =============================================================================
 
-/**
- * Returns a valid access token.
- * Priority:
- *   1. In-memory cache (not expired / near-expiry)
- *   2. Environment variable (if still valid)
- *   3. Fresh token from /auth endpoint
- *   4. Stale cached token (fallback — better than nothing)
- */
 async function getValidToken(): Promise<string | null> {
     const nowMs = Date.now();
 
-    // 1. Return cached token if still valid
     if (_cachedToken && nowMs < _tokenExpiresAtMs - TOKEN_REFRESH_BUFFER_MS) {
+        console.info("[Logger] Token reused");
         return _cachedToken;
     }
 
-    // 2. Check environment token
     const envToken = getEnvToken();
-    if (envToken && !isTokenExpiredOrNearExpiry(envToken)) {
+    if (envToken && !isTokenExpired(envToken)) {
         _cachedToken       = envToken;
-        _tokenExpiresAtMs  = getTokenExpiryMs(envToken);
+        _tokenExpiresAtMs  = decodeJwt(envToken);
+        console.info("[Logger] Token reused");
         return _cachedToken;
     }
 
-    // 3. Environment token is expired (or missing) — attempt refresh
-    const fresh = await refreshToken();
+    console.info("[Logger] Retrying authentication");
+    const fresh = await authenticate();
     if (fresh) {
         _cachedToken      = fresh;
-        _tokenExpiresAtMs = getTokenExpiryMs(fresh);
+        _tokenExpiresAtMs = decodeJwt(fresh);
         return _cachedToken;
     }
 
-    // 4. Fallback: return stale cached token so we at least try
-    if (_cachedToken) {
-        console.warn("[Logger] Using stale cached token — refresh failed.");
-        return _cachedToken;
-    }
-
-    // 5. Return stale env token as last resort
-    if (envToken) {
-        console.warn("[Logger] Using stale env token — all refresh attempts failed.");
-        return envToken;
-    }
-
-    console.error("[Logger] No token available — log call will be skipped.");
+    console.warn("[Logger] Authentication failed");
+    console.warn("[Logger] Skipping remote log");
     return null;
 }
 
@@ -256,23 +230,19 @@ export async function Log(
 
             if (res.status === 401) {
                 // ── 401: force token refresh on next call ───────────────────
-                console.warn(
-                    `[Logger] 401 Unauthorized — token rejected by evaluation service.\n` +
-                    `         Response body: ${body}\n` +
-                    `         Token preview: Bearer ${tokenPreview}\n` +
-                    `         Action: cache invalidated, will refresh on next Log() call.`
-                );
+                console.warn("[Logger] Authentication failed");
                 _cachedToken      = null; // Invalidate cache
                 _tokenExpiresAtMs = 0;    // Force refresh on next call
             } else {
                 console.warn(`[Logger] Remote log returned HTTP ${res.status}: ${body}`);
             }
         } else {
-            console.debug(`[Logger] Remote log accepted (HTTP ${res.status})`);
+            console.info(`[Logger] Log sent successfully`);
         }
     } catch (err) {
         // Network error — never crash the application
-        console.error("[Logger] Remote log request failed (network error):", err);
+        console.warn("[Logger] Authentication failed");
+        console.warn("[Logger] Skipping remote log");
     }
 }
 
