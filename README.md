@@ -136,4 +136,4 @@ Then open:
 - src/frontend - React/Vite dashboard UI
 - img - screenshots and result images
 - docker-compose.yml - infrastructure services
- 
+  
