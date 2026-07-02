@@ -29,6 +29,19 @@ This project is a full-stack notification platform for a campus environment. It 
 
 ![Notification dashboard preview](Campus-Evaluation-FS-main/img/Screenshot%202026-07-01%20131614.png)
 
+![Notification dashboard list view](Campus-Evaluation-FS-main/img/Screenshot%202026-07-02%20144031.png)
+
+## Project output
+
+This project delivers a polished campus notification system with:
+
+- A responsive React/Vite dashboard showing total, unread, read, and priority notifications.
+- Search, filter, pagination, and notification management UI components.
+- Real-time updates via WebSockets to reflect new notifications instantly.
+- Backend REST APIs for listing, counting, reading, creating, and deleting notifications.
+- Redis caching for faster notification reads and counts.
+- RabbitMQ-powered async email notification processing.
+
 ## How to run it
 
 ### 1) Start the infrastructure services
